@@ -2,7 +2,7 @@ import { attachImageUrls, removeImage, removeImages, uploadImage } from './image
 import { supabase } from './supabase.js';
 
 const TABLE = 'clothes';
-const COLUMNS = 'id, name, price, category, style_tags, wear_count, brand, image_path, created_at';
+const COLUMNS = 'id, name, price, category, style_tags, wear_count, base_wear_count, brand, rating_half, image_path, created_at';
 
 /** 옷장 목록 조회 (최신 등록순, 이미지 임시 주소 포함) */
 export async function fetchClothes() {
@@ -19,11 +19,11 @@ export async function fetchLastWorn() {
 }
 
 /** 새 옷 등록 후 저장된 행을 반환. imageBlob 이 있으면 먼저 업로드한다. */
-export async function insertCloth({ name, price, category, style_tags, brand, imageBlob }) {
+export async function insertCloth({ name, price, category, style_tags, brand, imageBlob, rating_half = null, base_wear_count = 0 }) {
   const image_path = imageBlob ? await uploadImage(imageBlob) : null;
   const { data, error } = await supabase
     .from(TABLE)
-    .insert({ name, price, category, style_tags, brand: brand || null, image_path, wear_count: 0 })
+    .insert({ name, price, category, style_tags, brand: brand || null, image_path, rating_half, base_wear_count, wear_count: base_wear_count })
     .select(COLUMNS)
     .single();
 
@@ -36,10 +36,10 @@ export async function insertCloth({ name, price, category, style_tags, brand, im
 }
 
 /**
- * 옷 수정. 착용 횟수는 바꾸지 않는다.
+ * 옷 수정. 기존 입은 횟수(base_wear_count)를 고치면 총 착용 횟수(wear_count)도 호출하는 쪽에서 함께 맞춰 넘긴다.
  * imageAction: 'keep' (유지) | 'replace' (imageBlob 으로 교체) | 'remove' (사진 빼기)
  */
-export async function updateCloth(id, { name, price, category, style_tags, brand, imageAction = 'keep', imageBlob, oldImagePath }) {
+export async function updateCloth(id, { name, price, category, style_tags, brand, rating_half = null, base_wear_count, wear_count, imageAction = 'keep', imageBlob, oldImagePath }) {
   let image_path = oldImagePath ?? null;
   let uploaded = null;
   if (imageAction === 'replace' && imageBlob) {
@@ -51,7 +51,7 @@ export async function updateCloth(id, { name, price, category, style_tags, brand
 
   const { data, error } = await supabase
     .from(TABLE)
-    .update({ name, price, category, style_tags, brand: brand || null, image_path })
+    .update({ name, price, category, style_tags, brand: brand || null, rating_half, base_wear_count, wear_count, image_path })
     .eq('id', id)
     .select(COLUMNS)
     .single();

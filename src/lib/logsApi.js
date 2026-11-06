@@ -96,6 +96,20 @@ export async function updateLogDetails(date, { memo, ratingHalf, photoAction = '
   return data;
 }
 
+/**
+ * 이미 기록한 착장의 TPO 와 입은 옷을 바꾼다.
+ * 오늘/과거 기록이면 뺀 옷은 착용 횟수 -1, 새로 넣은 옷은 +1 로 맞춰진다. (DB 함수가 처리)
+ */
+export async function updateLogOutfit(date, { tpo, clothesIds }) {
+  const { data, error } = await supabase.rpc('update_log_outfit', {
+    p_date: date,
+    p_tpo: tpo,
+    p_clothes_ids: clothesIds,
+  });
+  if (error) throw error;
+  return data;
+}
+
 /** 해당 날짜 착장 기록 삭제 (이미 반영된 착용 횟수는 되돌리고, 사진 파일도 지운다) */
 export async function deleteLog(date) {
   const { data, error } = await supabase.rpc('delete_log', { p_date: date });

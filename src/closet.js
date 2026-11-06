@@ -13,11 +13,15 @@ import {
 } from './lib/closetView.js';
 import { esc } from './lib/html.js';
 import { prepareImage } from './lib/imageApi.js';
+import { RATING_FILTERS } from './lib/rating.js';
+import { rateFromEvent, ratingInputHTML, starsHTML } from './ratingView.js';
 import { validateOptionName } from './lib/options.js';
 import { addOption, deleteOption, fetchOptions, renameOption } from './lib/optionsApi.js';
 import { isSupabaseConfigured } from './lib/supabase.js';
 
-const newFilters = () => ({ category: '', tag: '', brand: '' });
+const WEAR_HINT = '새 옷이면 0 그대로 두세요. 앱을 쓰기 전에 이미 입은 횟수가 있으면 넣어 주세요. 착장을 기록하면 거기서부터 +1씩 쌓이고, 이 숫자는 나중에 다시 고칠 수 있어요.';
+
+const newFilters = () => ({ category: '', tag: '', brand: '', rating: '' });
 // 일괄 수정 입력값. category '' / brand '' (+ clearBrand false) / tagMode 'none' 이면 그 항목은 바꾸지 않는다.
 const newBulk = () => ({ category: '', brand: '', clearBrand: false, tagMode: 'none', tags: new Set() });
 const TAG_MODES = {
@@ -32,6 +36,7 @@ const state = {
   lastWorn: new Map(), // 옷 id → 마지막으로 입은 날짜
   options: { categories: [...DEFAULT_CATEGORIES], tags: [...DEFAULT_TAGS] },
   selectedTags: new Set(),
+  rating: null, // 이 옷에 매기는 내 별점 (반 개 단위 1~10, 선택)
   // 옷 수정 중이면 그 옷의 id
   editingId: null,
   // 사진: 'keep' 유지 / 'replace' 새 사진 / 'remove' 사진 빼기
@@ -82,10 +87,17 @@ function renderShell(root) {
             <input name="brand" type="text" maxlength="40" placeholder="예) 무신사 스탠다드" class="field" />
           </label>
 
-          <label class="block">
-            <span class="field-label">구매 가격 (원)</span>
-            <input name="price" type="number" min="0" step="100" inputmode="numeric" placeholder="39000" class="field" />
-          </label>
+          <div class="grid grid-cols-2 gap-3">
+            <label class="block">
+              <span class="field-label">구매 가격 (원)</span>
+              <input name="price" type="number" min="0" step="100" inputmode="numeric" placeholder="39000" class="field" />
+            </label>
+            <label class="block">
+              <span class="field-label">기존 입은 횟수</span>
+              <input name="wearCount" type="number" min="0" step="1" value="0" inputmode="numeric" class="field" />
+            </label>
+          </div>
+          <p id="wear-hint" class="-mt-2 text-xs text-navy-400">${WEAR_HINT}</p>
 
           <div>
             <div class="mb-1.5 flex items-center justify-between">
@@ -110,6 +122,11 @@ function renderShell(root) {
               <button type="button" id="tag-add-btn" class="shrink-0 rounded-xl bg-pink-100 px-4 font-bold text-pink-600">추가</button>
             </div>
           </fieldset>
+
+          <div>
+            <span class="field-label">내 별점 (선택)</span>
+            <div id="rating-field"></div>
+          </div>
 
           <p id="form-message" class="min-h-5 text-sm font-medium text-pink-600" role="alert"></p>
           <div class="flex gap-2">
@@ -140,6 +157,10 @@ function renderShell(root) {
       </section>
     </div>
   `;
+}
+
+function renderRatingField() {
+  $('#rating-field').innerHTML = ratingInputHTML(state.rating);
 }
 
 function setFormMessage(text = '') {
@@ -187,6 +208,8 @@ function resetForm() {
   state.editingId = null;
   state.existingImageUrl = null;
   state.selectedTags.clear();
+  state.rating = null;
+  renderRatingField();
   renderTagGroup();
   renderCategorySelect($('#category-select').value);
   if (state.imagePreviewUrl) URL.revokeObjectURL(state.imagePreviewUrl);
@@ -196,6 +219,7 @@ function resetForm() {
   $('#image-input').value = '';
   renderImagePreview();
   $('#form-title').textContent = '새 옷 등록';
+  $('#wear-hint').textContent = WEAR_HINT;
   $('#submit-btn').textContent = '옷장에 넣기';
   $('#cancel-edit').classList.add('hidden');
   $('#delete-cloth').classList.add('hidden');
@@ -209,13 +233,18 @@ function startEdit(id) {
   state.editingId = id;
   state.existingImageUrl = cloth.image_url ?? null;
   state.selectedTags = new Set(cloth.style_tags ?? []);
+  state.rating = cloth.rating_half ?? null;
 
   const form = $('#cloth-form');
   form.elements.name.value = cloth.name;
   form.elements.brand.value = cloth.brand ?? '';
   form.elements.price.value = cloth.price;
+  const base = cloth.base_wear_count ?? 0;
+  form.elements.wearCount.value = base;
+  $('#wear-hint').textContent = `앱에서 기록한 ${cloth.wear_count - base}회 + 기존 ${base}회 = 총 ${cloth.wear_count}회예요. 기존 횟수를 고치면 총 횟수도 함께 바뀌어요.`;
   renderCategorySelect(cloth.category);
   renderTagGroup();
+  renderRatingField();
   renderImagePreview();
 
   $('#form-title').textContent = '옷 수정';
@@ -256,7 +285,14 @@ function renderFilters() {
       [...brands.map((b) => [b, `${b} (${count((x) => x.brand === b)})`]), [NO_BRAND, `브랜드 없음 (${count((x) => !x.brand)})`]],
       state.filters.brand,
     ) +
-    select('f-sort', '정렬', '', Object.entries(SORTS), state.sort);
+    select(
+      'f-rating',
+      '별점 필터',
+      '별점 전체',
+      [['none', `별점 없음 (${count((x) => x.rating_half == null)})`], ...RATING_FILTERS.filter((f) => f.value !== 'all').map((f) => [f.value, f.label])],
+      state.filters.rating,
+    ) +
+    select('f-sort', '정렬', '', Object.entries(SORTS), state.sort).replace('<label class="block">', '<label class="col-span-2 block">');
 }
 
 function clothCardHTML(cloth) {
@@ -288,6 +324,7 @@ function clothCardHTML(cloth) {
           </div>
           <h3 class="mt-1 truncate text-base font-bold text-navy-900">${esc(cloth.name)}</h3>
           ${meta ? `<p class="truncate text-xs text-navy-500">${meta}</p>` : ''}
+          ${cloth.rating_half ? `<p class="mt-0.5">${starsHTML(cloth.rating_half)}</p>` : ''}
           ${last ? `<p class="text-xs text-navy-400">마지막 착용 ${esc(last.slice(5).replace('-', '/'))}</p>` : ''}
         </div>
         ${
@@ -849,6 +886,14 @@ function bindEvents() {
   const form = $('#cloth-form');
   const submitBtn = $('#submit-btn');
 
+  // 내 별점 (같은 값을 다시 누르면 지워짐)
+  $('#rating-field').addEventListener('click', (e) => {
+    const next = rateFromEvent(e, state.rating);
+    if (next === undefined) return;
+    state.rating = next === 0 ? null : next;
+    renderRatingField();
+  });
+
   // 스타일 태그 다중 선택 (aria-pressed 로 상태 관리)
   $('#tag-group').addEventListener('click', (e) => {
     const btn = e.target.closest('[data-tag]');
@@ -866,6 +911,7 @@ function bindEvents() {
     if (id === 'f-category') state.filters.category = value;
     else if (id === 'f-tag') state.filters.tag = value;
     else if (id === 'f-brand') state.filters.brand = value;
+    else if (id === 'f-rating') state.filters.rating = value;
     else if (id === 'f-sort') state.sort = value;
     else return;
     state.page = 1;
@@ -943,10 +989,15 @@ function bindEvents() {
     const priceRaw = String(data.get('price') ?? '').trim();
     const price = Number(priceRaw);
     const category = String(data.get('category') ?? '');
+    const wearRaw = String(data.get('wearCount') ?? '').trim();
+    const wearCount = wearRaw === '' ? 0 : Number(wearRaw);
 
     if (!name) return setFormMessage('옷 이름을 입력해 주세요.');
     if (priceRaw === '' || !Number.isInteger(price) || price < 0) {
       return setFormMessage('구매 가격은 0 이상의 정수로 입력해 주세요.');
+    }
+    if (!Number.isInteger(wearCount) || wearCount < 0 || wearCount > 100000) {
+      return setFormMessage('기존 입은 횟수는 0 이상의 정수로 입력해 주세요.');
     }
     if (!state.options.categories.includes(category)) {
       return setFormMessage('카테고리를 선택해 주세요. 없으면 "+ 카테고리 추가"로 만들어 주세요.');
@@ -957,7 +1008,17 @@ function bindEvents() {
     submitBtn.disabled = true;
     submitBtn.textContent = '저장 중...';
     try {
-      const fields = { name, price, category, brand, style_tags: [...state.selectedTags] };
+      const fields = {
+        name,
+        price,
+        category,
+        brand,
+        style_tags: [...state.selectedTags],
+        rating_half: state.rating,
+        base_wear_count: wearCount,
+        // 총 횟수 = 앱에서 기록한 횟수(현재 총합 - 현재 기본값) + 새 기본값
+        wear_count: editing ? Math.max(0, editing.wear_count - (editing.base_wear_count ?? 0) + wearCount) : wearCount,
+      };
       if (editing) {
         const saved = await updateCloth(editing.id, {
           ...fields,
@@ -993,6 +1054,7 @@ export function initCloset(root) {
   state.lastWorn = new Map();
   state.options = { categories: [...DEFAULT_CATEGORIES], tags: [...DEFAULT_TAGS] };
   state.selectedTags = new Set();
+  state.rating = null;
   state.editingId = null;
   state.imageAction = 'keep';
   state.imageBlob = null;
@@ -1009,6 +1071,7 @@ export function initCloset(root) {
   renderShell(root);
   renderCategorySelect();
   renderTagGroup();
+  renderRatingField();
   renderFilters();
   createIcons({ icons: { Plus } });
   bindEvents();

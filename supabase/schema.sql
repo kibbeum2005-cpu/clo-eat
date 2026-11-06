@@ -901,3 +901,81 @@ $$;
 
 revoke execute on function public.delete_log(date) from public, anon;
 grant execute on function public.delete_log(date) to authenticated;
+
+-- ─────────────────────────────────────────────
+-- 12단계: 옷 별점(내가 얼마나 마음에 드는지, 0.5점 단위)
+-- ─────────────────────────────────────────────
+-- rating_half : 반 개 단위 개수. 1 = 0.5점, 10 = 5점. 비어 있으면 별점 없음.
+-- (착용 횟수 wear_count 는 앱에서 직접 고칠 수 있다. 기존 0 이상 제약을 그대로 쓴다.)
+alter table public.clothes add column if not exists rating_half smallint;
+
+alter table public.clothes drop constraint if exists clothes_rating_range;
+alter table public.clothes add constraint clothes_rating_range
+  check (rating_half is null or rating_half between 1 and 10);
+
+-- 기존에 입은 횟수(기본 숫자): 앱을 쓰기 전에 입은 횟수. 기본값 0.
+-- 총 착용 횟수(wear_count) = 기본 숫자 + 앱에서 기록한 횟수. 기본 숫자를 고치면 앱이 총 횟수도 함께 맞춘다.
+alter table public.clothes add column if not exists base_wear_count integer not null default 0;
+alter table public.clothes drop constraint if exists clothes_base_wear_nonneg;
+alter table public.clothes add constraint clothes_base_wear_nonneg check (base_wear_count >= 0);
+
+-- ─────────────────────────────────────────────
+-- 13단계: 이미 기록한 착장 수정 (TPO + 입은 옷 바꾸기)
+-- ─────────────────────────────────────────────
+-- 입은 옷이 바뀌면 착용 횟수를 맞춘다: 뺀 옷은 -1, 새로 넣은 옷은 +1. (예정 착장은 횟수를 건드리지 않는다)
+-- 옷 목록(clothes_ids)은 직접 수정을 막아 두었으므로 이 함수로만 바꿀 수 있다.
+-- security definer 이지만 모든 조회·수정을 auth.uid() 본인 데이터로만 제한한다.
+create or replace function public.update_log_outfit(p_date date, p_tpo text, p_clothes_ids bigint[])
+returns public.daily_logs
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_old   public.daily_logs;
+  v_new   public.daily_logs;
+  v_ids   bigint[];
+  v_owned int;
+  v_tpo   text := nullif(btrim(coalesce(p_tpo, '')), '');
+begin
+  if auth.uid() is null then
+    raise exception '로그인이 필요합니다.';
+  end if;
+  if v_tpo is null then
+    raise exception 'TPO가 비어 있습니다.';
+  end if;
+
+  select * into v_old from public.daily_logs where date = p_date and user_id = auth.uid() for update;
+  if v_old.id is null then
+    raise exception '해당 날짜의 착장 기록이 없습니다.';
+  end if;
+
+  select coalesce(array_agg(distinct x), '{}') into v_ids from unnest(p_clothes_ids) as x;
+  if coalesce(array_length(v_ids, 1), 0) = 0 then
+    raise exception '선택된 옷이 없습니다.';
+  end if;
+
+  select count(*) into v_owned from public.clothes where id = any(v_ids) and user_id = auth.uid();
+  if v_owned <> array_length(v_ids, 1) then
+    raise exception '내 옷장에 없는 옷이 포함되어 있습니다.';
+  end if;
+
+  if not v_old.planned then
+    update public.clothes
+       set wear_count = greatest(wear_count - 1, 0)
+     where user_id = auth.uid() and id = any(v_old.clothes_ids) and not (id = any(v_ids));
+    update public.clothes
+       set wear_count = wear_count + 1
+     where user_id = auth.uid() and id = any(v_ids) and not (id = any(v_old.clothes_ids));
+  end if;
+
+  update public.daily_logs set tpo = v_tpo, clothes_ids = v_ids
+   where id = v_old.id
+  returning * into v_new;
+
+  return v_new;
+end;
+$$;
+
+revoke execute on function public.update_log_outfit(date, text, bigint[]) from public, anon;
+grant execute on function public.update_log_outfit(date, text, bigint[]) to authenticated;

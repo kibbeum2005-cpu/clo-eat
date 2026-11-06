@@ -2,7 +2,7 @@ import { DEFAULT_CATEGORIES } from './lib/constants.js';
 import { currentMonth, monthBounds, monthGrid, shiftMonth } from './lib/calendar.js';
 import { fetchClothes } from './lib/clothesApi.js';
 import { esc } from './lib/html.js';
-import { confirmOutfit, deleteLog, fetchLogsBetween, fetchRatedLogs, updateLogDetails } from './lib/logsApi.js';
+import { confirmOutfit, deleteLog, fetchLogsBetween, fetchRatedLogs, updateLogDetails, updateLogOutfit } from './lib/logsApi.js';
 import { fetchOptions } from './lib/optionsApi.js';
 import { RATING_FILTERS, filterRated } from './lib/rating.js';
 import { isSupabaseConfigured } from './lib/supabase.js';
@@ -36,7 +36,7 @@ const state = {
   edit: null, // 이미 기록된 날의 메모·별점·사진 수정 중인 값 { logId, memo, rating, photo }
   rated: [], // 별점을 남긴 모든 기록
   ratedError: null,
-  ratedMin: 1, // 별점 모아보기: 이 값(반 개 단위) 이상만
+  ratedMin: 'all', // 별점 모아보기 필터 (lib/rating.js 의 RATING_FILTERS 값)
   ratedShown: RATED_PAGE,
   loading: false,
   error: null,
@@ -107,6 +107,7 @@ function editFor(log) {
       memo: log.memo ?? '',
       rating: log.rating_half ?? null,
       photo: createPhotoDraft(log.photo_url ?? null),
+      outfit: null, // 착장 바꾸기를 열었을 때만 { tpo, selected, activeCategory, extra }
     };
   }
   return state.edit;
@@ -137,7 +138,11 @@ function existingLogHTML(log) {
       <span class="text-sm text-navy-500">${log.planned ? '<span class="font-bold text-pink-600">예정</span> · ' : ''}${esc(log.tpo)}</span>
     </div>
     ${log.planned ? '<p class="text-xs text-navy-500">그날이 지나면 착용 횟수에 반영돼요.</p>' : ''}
-    <ul class="space-y-2">${list}</ul>
+    ${
+      outfitEditHTML(log) ??
+      `<ul class="space-y-2">${list}</ul>
+      <button type="button" id="outfit-edit-open" class="w-full rounded-xl border border-navy-200 py-2.5 text-sm font-bold text-navy-700 disabled:opacity-60" ${state.busy ? 'disabled' : ''}>착장 바꾸기 (TPO · 입은 옷)</button>`
+    }
     ${
       log.planned
         ? ''
@@ -155,6 +160,42 @@ function existingLogHTML(log) {
     <div class="grid grid-cols-3 gap-2">
       <button type="button" id="details-save" class="btn-primary col-span-2" ${state.busy ? 'disabled' : ''}>${state.busy ? '저장 중...' : '저장'}</button>
       <button type="button" id="log-delete" class="rounded-xl border border-pink-300 px-3 py-3 text-sm font-bold text-pink-600 disabled:opacity-60" ${state.busy ? 'disabled' : ''}>기록 삭제</button>
+    </div>`;
+}
+
+// 이미 기록한 착장의 TPO 와 입은 옷을 바꾸는 폼 (열려 있을 때만)
+function outfitEditHTML(log) {
+  const o = state.edit?.outfit;
+  if (!o) return null;
+  const categories = allCategories(state.categories, state.clothes);
+  if (!categories.includes(o.activeCategory)) o.activeCategory = categories[0];
+  // 지워진 TPO 로 기록된 날도 현재 값이 선택지에 남아 있도록
+  const tpoOptions = state.tpos.some((t) => t.name === o.tpo) ? state.tpos : [{ name: o.tpo, emoji: '✨' }, ...state.tpos];
+
+  return `
+    <div class="space-y-3 rounded-2xl bg-white p-3">
+      <p class="text-sm font-bold text-navy-900">착장 바꾸기</p>
+      <p class="text-xs text-navy-500">${
+        log.planned ? '예정 착장이라 착용 횟수는 그대로예요.' : '바뀐 옷만 착용 횟수가 조정돼요. (뺀 옷 -1, 새로 넣은 옷 +1)'
+      }</p>
+      <label class="block">
+        <span class="field-label">TPO</span>
+        <select id="outfit-tpo" class="field">
+          ${tpoOptions.map((t) => `<option value="${esc(t.name)}" ${t.name === o.tpo ? 'selected' : ''}>${esc(t.emoji)} ${esc(t.name)}</option>`).join('')}
+        </select>
+      </label>
+      <div id="outfit-picker" class="space-y-3">${pickerHTML({
+        clothes: state.clothes,
+        categories,
+        active: o.activeCategory,
+        selected: o.selected,
+        required: new Set(essentialCategories(categories)),
+      })}</div>
+      ${o.extra.length ? `<p class="text-xs text-navy-400">같은 카테고리에 함께 기록돼 있던 옷 ${o.extra.length}벌은 그대로 유지돼요.</p>` : ''}
+      <div class="grid grid-cols-3 gap-2">
+        <button type="button" id="outfit-save" class="btn-primary col-span-2" ${state.busy ? 'disabled' : ''}>착장 저장</button>
+        <button type="button" id="outfit-cancel" class="rounded-xl border border-navy-200 py-3 text-sm font-bold text-navy-700" ${state.busy ? 'disabled' : ''}>취소</button>
+      </div>
     </div>`;
 }
 
@@ -288,7 +329,7 @@ function bind() {
 
   // 별점 모아보기
   $('#rated-filter')?.addEventListener('change', (e) => {
-    state.ratedMin = Number(e.target.value);
+    state.ratedMin = e.target.value;
     state.ratedShown = RATED_PAGE;
     render();
   });
@@ -313,6 +354,34 @@ function bind() {
       },
     });
   }
+
+  // 착장 바꾸기 (TPO · 입은 옷)
+  $('#outfit-edit-open')?.addEventListener('click', startOutfitEdit);
+  $('#outfit-cancel')?.addEventListener('click', () => {
+    if (state.edit) state.edit.outfit = null;
+    render();
+  });
+  $('#outfit-save')?.addEventListener('click', saveOutfit);
+  $('#outfit-tpo')?.addEventListener('change', (e) => {
+    if (state.edit?.outfit) state.edit.outfit.tpo = e.target.value;
+  });
+  $('#outfit-picker')?.addEventListener('click', (e) => {
+    const o = state.edit?.outfit;
+    if (!o) return;
+    const tab = e.target.closest('[data-cat-tab]');
+    if (tab) {
+      o.activeCategory = tab.dataset.catTab;
+      return render();
+    }
+    const btn = e.target.closest('[data-pick]');
+    if (!btn) return;
+    const category = btn.dataset.pick;
+    const id = Number(btn.dataset.id);
+    if (o.selected[category] === id) delete o.selected[category];
+    else o.selected[category] = id;
+    state.message = null;
+    render();
+  });
 
   $('#receipt-details')?.addEventListener('toggle', (e) => (state.receiptOpen = e.target.open));
 
@@ -397,6 +466,41 @@ function removeLog() {
     disposePhoto(state.edit?.photo);
     state.edit = null;
   }, '기록을 삭제했어요.');
+}
+
+function startOutfitEdit() {
+  const log = state.selected ? logOn(state.selected) : null;
+  if (!log || !state.edit) return;
+  // 선택 UI 는 카테고리마다 옷 한 벌이라, 같은 카테고리에 겹쳐 기록된 옷은 extra 로 따로 보관해 그대로 유지한다.
+  const selected = {};
+  const extra = [];
+  for (const c of clothesOf(log)) {
+    if (selected[c.category] === undefined) selected[c.category] = c.id;
+    else extra.push(c.id);
+  }
+  state.edit.outfit = { tpo: log.tpo, selected, activeCategory: null, extra };
+  state.message = null;
+  render();
+}
+
+function saveOutfit() {
+  const date = state.selected;
+  const o = state.edit?.outfit;
+  if (!o) return;
+  const ids = [...Object.values(o.selected), ...o.extra];
+  if (!ids.length) {
+    state.message = { text: '입은 옷을 하나 이상 골라 주세요.', isError: true };
+    return render();
+  }
+  if (!o.tpo) {
+    state.message = { text: 'TPO를 골라 주세요.', isError: true };
+    return render();
+  }
+  return run(async () => {
+    await updateLogOutfit(date, { tpo: o.tpo, clothesIds: ids });
+    // 같은 날 메모·별점·사진을 고치던 값은 그대로 두고, 착장 폼만 닫는다
+    if (state.edit) state.edit.outfit = null;
+  }, '착장을 수정했어요.');
 }
 
 function saveDraft() {
@@ -502,7 +606,7 @@ export function resetOotd() {
     edit: null,
     rated: [],
     ratedError: null,
-    ratedMin: 1,
+    ratedMin: 'all',
     ratedShown: RATED_PAGE,
     error: null,
     message: null,

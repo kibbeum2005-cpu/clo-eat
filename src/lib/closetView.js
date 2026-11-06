@@ -1,5 +1,7 @@
 // 옷장 목록의 필터 · 정렬 · 페이지 나누기 (순수 JS)
 
+import { matchRating } from './rating.js';
+
 export const NO_BRAND = '__none__'; // 브랜드를 입력하지 않은 옷
 
 export const SORTS = {
@@ -7,17 +9,23 @@ export const SORTS = {
   name: '이름순',
   recent: '최근 입은 순',
   most: '많이 입은 순',
+  rating: '별점 높은 순',
 };
 
 export const PAGE_SIZE = 10;
 
-/** 카테고리 / 태그 / 브랜드 필터 (값이 비어 있으면 그 필터는 적용 안 함, 여러 개면 모두 만족해야 함) */
-export function filterClothes(clothes, { category = '', tag = '', brand = '' } = {}) {
+/**
+ * 카테고리 / 태그 / 브랜드 / 별점 필터 (값이 비어 있으면 그 필터는 적용 안 함, 여러 개면 모두 만족해야 함)
+ * rating: '' 전체 | 'none' 별점 없음 | RATING_FILTERS 의 값 ('5', '4.5', '4', '3', 'le2')
+ */
+export function filterClothes(clothes, { category = '', tag = '', brand = '', rating = '' } = {}) {
   return clothes.filter((c) => {
     if (category && c.category !== category) return false;
     if (tag && !(c.style_tags ?? []).includes(tag)) return false;
     if (brand === NO_BRAND && c.brand) return false;
     if (brand && brand !== NO_BRAND && c.brand !== brand) return false;
+    if (rating === 'none' && c.rating_half != null) return false;
+    if (rating && rating !== 'none' && !matchRating(rating, c.rating_half)) return false;
     return true;
   });
 }
@@ -40,6 +48,8 @@ export function sortClothes(clothes, sortKey, lastWorn = new Map()) {
       return list.sort(
         (a, b) => b.wear_count - a.wear_count || (last(b) > last(a) ? 1 : last(b) < last(a) ? -1 : byName(a, b)),
       );
+    case 'rating': // 별점 높은 순, 별점 없는 옷은 맨 뒤
+      return list.sort((a, b) => (b.rating_half ?? 0) - (a.rating_half ?? 0) || byName(a, b));
     default: // newest
       return list.sort((a, b) => (b.created_at > a.created_at ? 1 : b.created_at < a.created_at ? -1 : b.id - a.id));
   }
