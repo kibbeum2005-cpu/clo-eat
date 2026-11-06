@@ -274,6 +274,9 @@ revoke execute on function public.confirm_outfit(date, text, bigint[], date, tex
 grant execute on function public.confirm_outfit(date, text, bigint[], date, text) to authenticated;
 
 -- 착장 기록 삭제: 이미 착용 횟수에 반영된 기록이면 wear_count 를 되돌린다.
+-- (이 함수는 11단계에서 반환 타입이 바뀌었다. 파일 전체를 다시 실행해도 충돌하지 않도록 먼저 지운다.)
+drop function if exists public.delete_log(date);
+
 create or replace function public.delete_log(p_date date)
 returns void
 language plpgsql
