@@ -979,3 +979,5 @@ $$;
 
 revoke execute on function public.update_log_outfit(date, text, bigint[]) from public, anon;
 grant execute on function public.update_log_outfit(date, text, bigint[]) to authenticated;
+
+-- (2026-11-06) GitHub Actions 자동 반영 동작 확인용 주석
