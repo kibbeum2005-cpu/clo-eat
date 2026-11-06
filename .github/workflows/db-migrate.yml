@@ -77,7 +77,9 @@ jobs:
             --data @payload.json)
           echo "HTTP ${status}"
           if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
-            echo "::error::DB 반영에 실패했습니다. 아래 응답을 확인해 주세요."
+            # 응답 앞부분을 실행 요약(주석)에도 남겨 로그를 열지 않고도 원인을 볼 수 있게 한다. (토큰은 응답에 포함되지 않는다)
+            detail=$(head -c 1500 response.json | tr '\r\n' '  ' | sed 's/%/%25/g')
+            echo "::error title=DB 반영 실패::HTTP ${status} ${detail}"
             cat response.json
             exit 1
           fi
